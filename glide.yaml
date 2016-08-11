@@ -1,0 +1,6 @@
+package: github.com/ionrock/zonewatcher
+import:
+- package: github.com/urfave/cli
+- package: github.com/gorilla/mux
+- package: github.com/gorilla/handlers
+- package: github.com/boltdb/bolt
