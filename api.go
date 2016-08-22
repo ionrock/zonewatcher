@@ -75,7 +75,9 @@ func (s *Server) CreateObserverHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	go o.Watch(s.db)
+	d := DNSClient{Ns: o.Ns}
+
+	go o.Watch(d, s.db)
 	s.Observers = append(s.Observers, o)
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")

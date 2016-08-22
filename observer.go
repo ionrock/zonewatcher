@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/boltdb/bolt"
@@ -16,35 +14,11 @@ import (
 const (
 	ZONE_CREATED    = "ZONE_CREATE"
 	ZONE_DELETED    = "ZONE_DELETE"
+	ZONE_ERROR      = "ZONE_ERROR"
 	STATUS_CANCELED = "CANCELED"
 	STATUS_FINISHED = "FINISHED"
 	STATUS_WAITING  = "WAITING"
 )
-
-func Exists(zone string, ns string) string {
-	c := []string{"dig", "+short"}
-
-	if strings.Contains(ns, ":") {
-		parts := strings.Split(ns, ":")
-		c = append(c, "-p", parts[1], fmt.Sprintf("@%s", parts[0]))
-	}
-	c = append(c, zone, "SOA")
-
-	log.Print(strings.Join(c, " "))
-
-	cmd := exec.Command(c[0], c[1:]...)
-	out, err := cmd.Output()
-	if err != nil {
-		panic(err)
-	}
-
-	log.Printf("output: %s", bytes.Trim(out, "\n"))
-
-	if len(bytes.Trim(out, "\n")) == 0 {
-		return ZONE_DELETED
-	}
-	return ZONE_CREATED
-}
 
 func timestamp() int64 {
 	return time.Now().UTC().Unix()
@@ -67,7 +41,7 @@ func (o *Observer) Name() string {
 	return fmt.Sprintf("%s-%s-%s", o.Zone, o.Ns, o.State)
 }
 
-func (o *Observer) Watch(db *bolt.DB) {
+func (o *Observer) Watch(dig Dig, db *bolt.DB) {
 	o.Open(db)
 
 	// close as cancelled by default
@@ -94,7 +68,12 @@ func (o *Observer) Watch(db *bolt.DB) {
 				o.Close(db, STATUS_CANCELED)
 				return
 			}
-			if Exists(o.Zone, o.Ns) == o.State {
+			state, err := dig.State(o.Zone)
+			if err != nil {
+				log.Print(err)
+			}
+			// state should be nil here if there was an error
+			if state == o.State {
 				o.Close(db, STATUS_FINISHED)
 				return
 			}
