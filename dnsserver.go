@@ -29,24 +29,32 @@ forever:
 	}
 }
 
-func Serve(net string, host string, port string, srv *DnsHandler) {
+type DnsHandler struct {
+	State     bool
+	Once      bool
+	TcpServer *dns.Server
+	UdpServer *dns.Server
+}
+
+func (d *DnsHandler) NewServer(net string, host string, port string) *dns.Server {
 	addr := fmt.Sprintf("%s:%s", host, port)
 	server := &dns.Server{
 		Addr:    addr,
 		Net:     net,
-		Handler: srv,
+		Handler: d,
 	}
 
-	log.Printf("starting dns %s listener on %s", net, addr)
-
-	err := server.ListenAndServe()
-	if err != nil {
-		panic(fmt.Sprintf("Failed to set up the %s server: %s", net, err.Error()))
-	}
+	return server
 }
 
-type DnsHandler struct {
-	State bool
+func (d *DnsHandler) Serve(s *dns.Server) {
+
+	log.Printf("starting dns %s listener on %s", s.Net, s.Addr)
+
+	err := s.ListenAndServe()
+	if err != nil {
+		panic(fmt.Sprintf("Failed to set up the %s server: %s", s.Net, err.Error()))
+	}
 }
 
 func (d *DnsHandler) ServeDNS(writer dns.ResponseWriter, request *dns.Msg) {
@@ -58,8 +66,9 @@ func (d *DnsHandler) ServeDNS(writer dns.ResponseWriter, request *dns.Msg) {
 		// zone := request.Question[0].Name
 
 		log.Printf("%#v", request)
+		zone := request.Question[0].Name
 
-		if d.State {
+		if zone == "zone_deleted.com." {
 			log.Print("missing zone")
 			message = missingZone(request)
 			d.State = false
@@ -74,6 +83,14 @@ func (d *DnsHandler) ServeDNS(writer dns.ResponseWriter, request *dns.Msg) {
 	}
 
 	writer.WriteMsg(message)
+
+	if d.Once && d.TcpServer != nil {
+		d.TcpServer.Shutdown()
+	}
+
+	if d.Once && d.UdpServer != nil {
+		d.UdpServer.Shutdown()
+	}
 }
 
 func missingZone(request *dns.Msg) *dns.Msg {
