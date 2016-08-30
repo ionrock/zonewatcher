@@ -34,7 +34,7 @@ type Observer struct {
 	Timeout  int64  `json:"timeout"`
 	State    string `json:"state"`
 	Status   string `json:"status"`
-	exit     bool
+	exit     chan bool
 }
 
 func (o *Observer) Name() string {
@@ -61,13 +61,14 @@ func (o *Observer) Watch(dig Dig, db *bolt.DB) {
 	for {
 		select {
 		case <-timeout:
-			o.Stop()
+			log.Printf("Exiting %s", o.Name())
+			o.Close(db, STATUS_CANCELED)
+			return
+		case <-o.exit:
+			log.Printf("Exiting %s", o.Name())
+			o.Close(db, STATUS_CANCELED)
+			return
 		default:
-			if o.exit {
-				log.Printf("Exiting %s", o.Name())
-				o.Close(db, STATUS_CANCELED)
-				return
-			}
 			state, err := dig.State(o.Zone)
 			if err != nil {
 				log.Print(err)
@@ -82,15 +83,28 @@ func (o *Observer) Watch(dig Dig, db *bolt.DB) {
 	}
 }
 
+func (o *Observer) Wait() {
+	for {
+		time.Sleep(time.Duration(o.Interval) * time.Second)
+		if o.Status != STATUS_WAITING && o.Status != "" {
+			log.Printf("Status is not waiting: %s", o.Status)
+			return
+		}
+	}
+}
+
 func (o *Observer) Stop() {
-	o.exit = true
+	o.exit <- true
 }
 
 func (o *Observer) Close(db *bolt.DB, status string) {
-	o.Finish = timestamp()
-	o.Duration = o.Finish - o.Start
-	o.Status = status
-	log.Printf("Finished %s %d %d %s", o.Name(), o.Finish, o.Duration, o.State)
+
+	if o.Status == STATUS_WAITING || o.Status == "" {
+		o.Finish = timestamp()
+		o.Duration = o.Finish - o.Start
+		o.Status = status
+		log.Printf("Finished %s %d %d %s %s", o.Name(), o.Finish, o.Duration, o.State, o.Status)
+	}
 }
 
 func (o *Observer) Open(db *bolt.DB) {
