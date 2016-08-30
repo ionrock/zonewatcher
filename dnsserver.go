@@ -2,10 +2,13 @@ package zonewatcher
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
+	// "strings"
 	"syscall"
 
 	"github.com/miekg/dns"
@@ -29,11 +32,74 @@ forever:
 	}
 }
 
+type DnsBackend interface {
+	Add(string)
+	Del(string)
+	Find(string) bool
+}
+
+func NewFileDnsBackend(dirname string) *FileDnsBackend {
+	_, err := os.Stat(dirname)
+	if err != nil {
+		err = os.Mkdir(dirname, 0755)
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	return &FileDnsBackend{dirname: dirname}
+}
+
+type FileDnsBackend struct {
+	dirname string
+}
+
+func (b FileDnsBackend) Fname(zone string) string {
+	base, _ := filepath.Abs(b.dirname)
+	return filepath.Join(base, zone)
+}
+
+func (b FileDnsBackend) Find(zone string) bool {
+	_, err := os.Stat(b.Fname(zone))
+	if err != nil {
+		log.Print(err)
+		return false
+	}
+	return true
+}
+
+func (b FileDnsBackend) Add(zone string) {
+	log.Print("Add zone: ", zone, b.Fname(zone))
+	if b.Find(zone) {
+		return
+	}
+
+	err := ioutil.WriteFile(b.Fname(zone), []byte("true"), 0644)
+	if err != nil {
+		panic(err)
+	}
+
+	log.Print("Added zone: ", zone, b.Find(zone))
+
+}
+
+func (b FileDnsBackend) Del(zone string) {
+
+	log.Print("Del zone: ", zone, b.Fname(zone))
+	if b.Find(zone) == false {
+		return
+	}
+
+	err := os.Remove(b.Fname(zone))
+	if err != nil {
+		log.Print(err)
+	}
+}
+
 type DnsHandler struct {
-	State     bool
-	Once      bool
-	TcpServer *dns.Server
-	UdpServer *dns.Server
+	State   bool
+	Servers []*dns.Server
+	Zones   DnsBackend
 }
 
 func (d *DnsHandler) NewServer(net string, host string, port string) *dns.Server {
@@ -55,6 +121,17 @@ func (d *DnsHandler) Serve(s *dns.Server) {
 	if err != nil {
 		panic(fmt.Sprintf("Failed to set up the %s server: %s", s.Net, err.Error()))
 	}
+
+	d.Servers = append(d.Servers, s)
+}
+
+func (d *DnsHandler) Shutdown() {
+	for _, s := range d.Servers {
+		err := s.Shutdown()
+		if err != nil {
+			panic(err)
+		}
+	}
 }
 
 func (d *DnsHandler) ServeDNS(writer dns.ResponseWriter, request *dns.Msg) {
@@ -65,17 +142,18 @@ func (d *DnsHandler) ServeDNS(writer dns.ResponseWriter, request *dns.Msg) {
 		// In case we want run tests based on the zone nmae
 		// zone := request.Question[0].Name
 
-		log.Printf("%#v", request)
 		zone := request.Question[0].Name
 
-		if zone == "zone_deleted.com." {
-			log.Print("missing zone")
-			message = missingZone(request)
-			d.State = false
-		} else {
-			log.Print("zone exists")
+		exists := d.Zones.Find(zone)
+
+		if exists {
+			log.Print("exists: ", zone)
 			message = zoneExists(request)
 			d.State = true
+		} else {
+			log.Print("missing: ", zone)
+			message = missingZone(request)
+			d.State = false
 		}
 	default:
 		log.Printf("ERROR %s : unsupported opcode %d", request.Question[0].Name, request.Opcode)
@@ -83,18 +161,9 @@ func (d *DnsHandler) ServeDNS(writer dns.ResponseWriter, request *dns.Msg) {
 	}
 
 	writer.WriteMsg(message)
-
-	if d.Once && d.TcpServer != nil {
-		d.TcpServer.Shutdown()
-	}
-
-	if d.Once && d.UdpServer != nil {
-		d.UdpServer.Shutdown()
-	}
 }
 
 func missingZone(request *dns.Msg) *dns.Msg {
-	log.Print("zone missing")
 	message := new(dns.Msg)
 	message.SetReply(request)
 	message.RecursionDesired = false
@@ -125,8 +194,6 @@ func zoneExists(request *dns.Msg) *dns.Msg {
 
 	message.Answer = append(message.Answer, rr)
 	message.RecursionDesired = false
-
-	log.Printf("%#v", message)
 
 	return message
 }
